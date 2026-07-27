@@ -64,6 +64,31 @@ All type-specific fields are validated in real time during interactive mode.
 - `nsl remove <id-or-name>` — match by ID (full or prefix), then by name prefix
 - `nsl remove` — interactive fuzzy select from live apps with confirmation
 
+### nsl version
+
+Prints the CLI version and the registry server version. Useful for checking compatibility.
+
+```bash
+nsl version
+```
+
+### Version compatibility
+
+The CLI calls `${api}/api/v1/...` routes. If the CLI version differs from the
+registry server version, `nsl` prints a warning on every command:
+
+```
+warning: nsl v0.1.0, registry dev (use --no-version-check to suppress)
+```
+
+This warns about potential drift without blocking operation. Pinned install
+with `go install github.com/josephdodge8141/nsl/cmd/nsl@v0.1.0` ensures the
+CLI matches a known release.
+
+When the registry server is updated in a breaking way, the route prefix
+changes to `/api/v2/...` and the CLI must be rebuilt. The old CLI will fail
+with a 404, not silently corrupt data.
+
 ## Stack architecture
 
 The Not So Localhost stack runs in Docker behind a Cloudflare Tunnel:

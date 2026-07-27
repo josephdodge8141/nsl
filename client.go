@@ -21,8 +21,26 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
+const apiPath = "/api/v1"
+
+func (c *Client) FetchVersion() (string, error) {
+	resp, err := c.HTTP.Get(c.BaseURL + apiPath + "/version")
+	if err != nil {
+		return "", fmt.Errorf("fetch version: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var v struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		return "", fmt.Errorf("fetch version: decode: %w", err)
+	}
+	return v.Version, nil
+}
+
 func (c *Client) List() ([]App, error) {
-	resp, err := c.HTTP.Get(c.BaseURL + "/api/apps")
+	resp, err := c.HTTP.Get(c.BaseURL + apiPath + "/apps")
 	if err != nil {
 		return nil, fmt.Errorf("list apps: %w", err)
 	}
@@ -45,7 +63,7 @@ func (c *Client) Create(app App) (*App, error) {
 		return nil, fmt.Errorf("create app: marshal: %w", err)
 	}
 
-	resp, err := c.HTTP.Post(c.BaseURL+"/api/apps", "application/json", bytes.NewReader(body))
+	resp, err := c.HTTP.Post(c.BaseURL+apiPath+"/apps", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create app: %w", err)
 	}
@@ -64,7 +82,7 @@ func (c *Client) Create(app App) (*App, error) {
 }
 
 func (c *Client) Delete(id string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.BaseURL+"/api/apps/"+id, nil)
+	req, err := http.NewRequest(http.MethodDelete, c.BaseURL+apiPath+"/apps/"+id, nil)
 	if err != nil {
 		return fmt.Errorf("delete app: %w", err)
 	}

@@ -4,7 +4,11 @@ CLI for managing apps in the Not So Localhost registry server.
 
 ## Install
 
-    go install ./cmd/nsl
+    go install github.com/josephdodge8141/nsl/cmd/nsl@latest
+
+To pin a specific version:
+
+    go install github.com/josephdodge8141/nsl/cmd/nsl@v0.1.0
 
 ## Usage
 
