@@ -1,308 +1,129 @@
+// Package main implements the nsl command-line client.
 package main
 
 import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 
-	survey "github.com/AlecAivazis/survey/v2"
 	"github.com/josephdodge8141/nsl"
 )
 
 type addFlags struct {
-	Name             string
-	AppType          string
-	TargetURL        string
-	DocsURL          string
-	ConnectionString string
-	Description      string
-	NoAuth           bool
-	Disabled         bool
+	Name        string
+	TargetURL   string
+	Description string
+	Policy      string
+	Disabled    bool
 }
 
 var hostnameRE = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
 
-func addCmd(apiURL string, f addFlags) {
+func addCmd(apiURL string, flags addFlags) error {
+	if err := validateAddFlags(flags); err != nil {
+		return usageError(err.Error(), `nsl add --name <name> --target-url <url> [--policy browser|upstream|litellm]`)
+	}
 	client := nsl.NewClient(apiURL)
-	interactive := f.Name == "" && f.AppType == ""
-
-	if interactive {
-		interactiveAdd(client, f)
-		return
-	}
-
-	if err := validateAddFlags(f); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if f.Name == "" {
-		f.Name = promptName(client)
-	}
-	if f.AppType == "" {
-		f.AppType = promptType()
-	}
-	if f.Description == "" {
-		var desc string
-		if err := survey.AskOne(&survey.Input{Message: "Description (optional):"}, &desc); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		f.Description = desc
-	}
-
-	conditionalFields(client, &f, apiURL)
-
-	showSummary(f)
-	confirm := false
-	if err := survey.AskOne(&survey.Confirm{Message: "Create this app?", Default: true}, &confirm); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	if !confirm {
-		fmt.Println("Cancelled.")
-		return
-	}
-
-	app := nsl.App{
-		Name:             f.Name,
-		Description:      f.Description,
-		AppType:          f.AppType,
-		TargetURL:        f.TargetURL,
-		DocsURL:          f.DocsURL,
-		ConnectionString: f.ConnectionString,
-		NoAuth:           f.NoAuth,
-		Enabled:          !f.Disabled,
-	}
-
-	created, err := client.Create(app)
+	registryConfig, err := client.Config()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-	fmt.Printf("Created %s -> %s\n", created.Name, created.RouteRule)
+	node, err := client.LocalNode()
+	if err != nil {
+		return err
+	}
+	nodeID := node.ID
+	enabled := !flags.Disabled
+	routes := policyRoutes(flags.Name, node, registryConfig.Domain, flags.Policy)
+	existingApps, err := client.List()
+	if err != nil {
+		return err
+	}
+	for _, existing := range existingApps {
+		if existing.NodeID != nodeID || !strings.EqualFold(existing.Name, flags.Name) {
+			continue
+		}
+		desiredRoutes := make([]routeComparable, len(routes))
+		for index, route := range routes {
+			desiredRoutes[index] = routeComparable{Rule: route.Rule, Priority: route.Priority, Auth: route.Auth}
+		}
+		existingRoutes := make([]routeComparable, len(existing.Routes))
+		for index, route := range existing.Routes {
+			existingRoutes[index] = routeComparable{Rule: route.Rule, Priority: route.Priority, Auth: route.Auth}
+		}
+		sort.Slice(desiredRoutes, func(i, j int) bool { return desiredRoutes[i].Rule < desiredRoutes[j].Rule })
+		sort.Slice(existingRoutes, func(i, j int) bool { return existingRoutes[i].Rule < existingRoutes[j].Rule })
+		if existing.TargetURL != flags.TargetURL || existing.Description != flags.Description || existing.Enabled != !flags.Disabled || !reflect.DeepEqual(existingRoutes, desiredRoutes) {
+			return usageError("app is already registered with different configuration", "Use the apps portal to edit the existing registration")
+		}
+		fmt.Println("app:")
+		fmt.Printf("  id: %s\n", quote(existing.ID))
+		fmt.Printf("  name: %s\n", quote(existing.Name))
+		fmt.Printf("  node_id: %s\n", quote(existing.NodeID))
+		fmt.Printf("  url: %s\n", quote(existing.PublicURL))
+		fmt.Println("  status: already_registered")
+		return nil
+	}
+	created, err := client.Create(nsl.AppInput{
+		NodeID: nodeID, Name: flags.Name, TargetURL: flags.TargetURL,
+		Description: flags.Description, Routes: routes, Enabled: &enabled,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println("app:")
+	fmt.Printf("  id: %s\n", quote(created.ID))
+	fmt.Printf("  name: %s\n", quote(created.Name))
+	fmt.Printf("  node_id: %s\n", quote(created.NodeID))
+	fmt.Printf("  url: %s\n", quote(created.PublicURL))
+	fmt.Printf("  status: registered\n")
+	return nil
 }
 
-func validateAddFlags(f addFlags) error {
-	if f.Name != "" && !hostnameRE.MatchString(f.Name) {
-		return errors.New("name must be a valid hostname: alphanumeric and hyphens only")
+func validateAddFlags(flags addFlags) error {
+	if flags.Name == "" {
+		return errors.New("--name is required")
 	}
-	if f.AppType != "" && f.AppType != "fe" && f.AppType != "be" && f.AppType != "db" {
-		return errors.New("type must be one of: fe, be, db")
+	if !hostnameRE.MatchString(flags.Name) {
+		return errors.New("--name must contain only letters, numbers, and internal hyphens")
 	}
-	if f.TargetURL != "" {
-		if _, err := url.ParseRequestURI(f.TargetURL); err != nil {
-			return fmt.Errorf("invalid target URL: %w", err)
-		}
+	if len(flags.Name) > 30 {
+		return errors.New("--name must be 30 characters or fewer")
 	}
-	if f.DocsURL != "" {
-		if _, err := url.ParseRequestURI(f.DocsURL); err != nil {
-			return fmt.Errorf("invalid docs URL: %w", err)
-		}
+	if flags.TargetURL == "" {
+		return errors.New("--target-url is required")
 	}
-	if f.ConnectionString != "" && !strings.HasPrefix(f.ConnectionString, "postgres://") {
-		return errors.New("connection string must start with postgres://")
+	parsed, err := url.Parse(flags.TargetURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return errors.New("--target-url must be an HTTP URL without credentials")
 	}
-	if f.AppType == "fe" && f.TargetURL == "" {
-		return errors.New("target-url is required for type fe")
-	}
-	if f.AppType == "be" && f.DocsURL == "" {
-		return errors.New("docs-url is required for type be")
-	}
-	if f.AppType == "db" && f.ConnectionString == "" {
-		return errors.New("connection-string is required for type db")
+	if flags.Policy != "browser" && flags.Policy != "upstream" && flags.Policy != "litellm" {
+		return errors.New("--policy must be browser, upstream, or litellm")
 	}
 	return nil
 }
 
-func promptName(client *nsl.Client) string {
-	var name string
-	existing := fetchNames(client)
-	validate := func(val interface{}) error {
-		s, ok := val.(string)
-		if !ok {
-			return errors.New("invalid input")
-		}
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return errors.New("name is required")
-		}
-		if !hostnameRE.MatchString(s) {
-			return errors.New("name must be a valid hostname: alphanumeric and hyphens only")
-		}
-		for _, n := range existing {
-			if strings.EqualFold(s, n) {
-				return fmt.Errorf("name %q already exists", s)
-			}
-		}
-		return nil
-	}
-	if err := survey.AskOne(&survey.Input{Message: "Name:"}, &name, survey.WithValidator(validate)); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	return name
+type routeComparable struct {
+	Rule     string
+	Priority int
+	Auth     nsl.AuthPolicy
 }
 
-func promptType() string {
-	var t string
-	if err := survey.AskOne(&survey.Select{Message: "Type:", Options: []string{"fe", "be", "db"}}, &t); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	return t
-}
-
-func promptURL(msg string, required bool) string {
-	var u string
-	validate := func(val interface{}) error {
-		s, ok := val.(string)
-		if !ok {
-			return errors.New("invalid input")
-		}
-		s = strings.TrimSpace(s)
-		if !required && s == "" {
-			return nil
-		}
-		if s == "" {
-			return fmt.Errorf("%s is required", msg)
-		}
-		if _, err := url.ParseRequestURI(s); err != nil {
-			return fmt.Errorf("valid URL required: %w", err)
-		}
-		return nil
-	}
-	if err := survey.AskOne(&survey.Input{Message: msg + ":"}, &u, survey.WithValidator(validate)); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	return u
-}
-
-func promptConnString() string {
-	var s string
-	validate := func(val interface{}) error {
-		v, ok := val.(string)
-		if !ok {
-			return errors.New("invalid input")
-		}
-		v = strings.TrimSpace(v)
-		if v == "" {
-			return errors.New("connection string is required")
-		}
-		if !strings.HasPrefix(v, "postgres://") {
-			return errors.New("connection string must start with postgres://")
-		}
-		return nil
-	}
-	if err := survey.AskOne(&survey.Input{Message: "Connection string:"}, &s, survey.WithValidator(validate)); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	return s
-}
-
-func conditionalFields(client *nsl.Client, f *addFlags, apiURL string) {
-	switch f.AppType {
-	case "fe":
-		if f.TargetURL == "" {
-			f.TargetURL = promptURL("Target URL", true)
-		}
-	case "be":
-		if f.DocsURL == "" {
-			f.DocsURL = promptURL("Docs URL", true)
-		}
-		if f.TargetURL == "" {
-			f.TargetURL = promptURL("Target URL (optional)", false)
-		}
-	case "db":
-		if f.ConnectionString == "" {
-			f.ConnectionString = promptConnString()
+func policyRoutes(name string, node nsl.Node, domain, policy string) []nsl.RouteInput {
+	hostname := fmt.Sprintf("%s--%s.%s", strings.ToLower(name), node.Slug, domain)
+	switch policy {
+	case "browser":
+		return []nsl.RouteInput{{Rule: fmt.Sprintf("Host(`%s`)", hostname), Priority: 100, Auth: nsl.AuthBrowser}}
+	case "upstream":
+		return []nsl.RouteInput{{Rule: fmt.Sprintf("Host(`%s`)", hostname), Priority: 100, Auth: nsl.AuthUpstream}}
+	default:
+		return []nsl.RouteInput{
+			{Rule: fmt.Sprintf("Host(`%s`) && !(Path(`/v1`) || PathPrefix(`/v1/`))", hostname), Priority: 100, Auth: nsl.AuthBrowser},
+			{Rule: fmt.Sprintf("Host(`%s`) && (Path(`/v1`) || PathPrefix(`/v1/`))", hostname), Priority: 110, Auth: nsl.AuthUpstream},
 		}
 	}
-
-	if !f.NoAuth {
-		noAuth := false
-		survey.AskOne(&survey.Confirm{Message: "No auth?", Default: false}, &noAuth)
-		f.NoAuth = noAuth
-	}
-
-	if !f.Disabled {
-		disabled := false
-		survey.AskOne(&survey.Confirm{Message: "Disabled?", Default: false}, &disabled)
-		f.Disabled = disabled
-	}
-}
-
-func interactiveAdd(client *nsl.Client, f addFlags) {
-	f.Name = promptName(client)
-	f.AppType = promptType()
-
-	var desc string
-	survey.AskOne(&survey.Input{Message: "Description (optional):"}, &desc)
-	f.Description = desc
-
-	conditionalFields(client, &f, client.BaseURL)
-
-	showSummary(f)
-	confirm := false
-	survey.AskOne(&survey.Confirm{Message: "Create this app?", Default: true}, &confirm)
-	if !confirm {
-		fmt.Println("Cancelled.")
-		return
-	}
-
-	app := nsl.App{
-		Name:             f.Name,
-		Description:      f.Description,
-		AppType:          f.AppType,
-		TargetURL:        f.TargetURL,
-		DocsURL:          f.DocsURL,
-		ConnectionString: f.ConnectionString,
-		NoAuth:           f.NoAuth,
-		Enabled:          !f.Disabled,
-	}
-
-	created, err := client.Create(app)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Created %s -> %s\n", created.Name, created.RouteRule)
-}
-
-func showSummary(f addFlags) {
-	fmt.Println("\n--- Summary ---")
-	fmt.Printf("  Name:        %s\n", f.Name)
-	fmt.Printf("  Type:        %s\n", f.AppType)
-	if f.TargetURL != "" {
-		fmt.Printf("  Target URL:  %s\n", f.TargetURL)
-	}
-	if f.DocsURL != "" {
-		fmt.Printf("  Docs URL:    %s\n", f.DocsURL)
-	}
-	if f.ConnectionString != "" {
-		fmt.Printf("  Connection:  %s\n", f.ConnectionString)
-	}
-	if f.Description != "" {
-		fmt.Printf("  Description: %s\n", f.Description)
-	}
-	fmt.Printf("  No auth:     %v\n", f.NoAuth)
-	fmt.Printf("  Disabled:    %v\n", f.Disabled)
-	fmt.Println()
-}
-
-func fetchNames(client *nsl.Client) []string {
-	apps, err := client.List()
-	if err != nil {
-		return nil
-	}
-	names := make([]string, len(apps))
-	for i, a := range apps {
-		names[i] = a.Name
-	}
-	return names
 }

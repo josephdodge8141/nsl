@@ -1,63 +1,87 @@
 # nsl
 
-CLI for managing apps in the Not So Localhost registry server.
+CLI for registering direct HTTP services across Not-So-Localhost machines.
 
 ## Install
 
-    go install github.com/josephdodge8141/nsl/cmd/nsl@latest
+The latest tagged release predates distributed node enrollment. Until a release
+containing `enrollment-token` is tagged, install from a current checkout:
 
-To pin a specific version:
+```sh
+go install ./cmd/nsl
+export PATH="$HOME/go/bin:$PATH"
+nsl enrollment-token --help
+```
 
-    go install github.com/josephdodge8141/nsl/cmd/nsl@v0.1.0
+The CLI uses the local registry at `http://localhost:7272` by default. Override
+it with `NSL_API_URL` or `--api-url`.
 
-## Usage
+Set `NSL_API_TOKEN` to the node's configured `REGISTRY_API_TOKEN` before
+performing mutations. The CLI never prints this token.
 
-The CLI communicates with the registry server at `http://localhost:7272` by default.
-Set a custom URL with `--api-url` or the `NSL_API_URL` environment variable.
+## Register a service
 
-### List all apps
+```sh
+nsl add --name landing --target-url http://host.docker.internal:7310
+```
 
-    nsl list
-    nsl list --api-url http://registry.example.com:7272
+The registry assigns the local machine UUID and publishes:
 
-### Add an app
+```text
+https://landing--<node-name>.joedodge.dev
+```
 
-Interactive mode (no flags):
+Exposure policies:
 
-    nsl add
+```sh
+# Keycloak browser login for the whole service
+nsl add --name dashboard --target-url http://dashboard:3000 --policy browser
 
-Non-interactive:
+# The upstream validates its own API credentials
+nsl add --name api --target-url http://api:8080 --policy upstream
 
-    nsl add --name my-api --type be --docs-url http://my-api:8080/swagger
-    nsl add --name fe-app --type fe --target-url http://fe-app:3000 --description "Frontend"
-    nsl add --name pg-db --type db --connection-string postgres://user:pass@host:5432/db
+# Keycloak for /ui and LiteLLM keys for /v1
+nsl add --name litellm --target-url http://host.docker.internal:4000 --policy litellm
+```
 
-Partial flags (prompts for missing fields):
+NSL does not start applications, databases, Swagger UI, or pgweb containers.
+The application and its data remain owned by the machine running them.
 
-    nsl add --name my-api --type be
-    nsl add --name my-api --disabled
+## Inventory
 
-Flags:
+```sh
+nsl
+nsl list
+nsl nodes
+nsl remove <id-or-exact-name>
+```
 
-| Flag                  | Env            | Description                     |
-|-----------------------|----------------|---------------------------------|
-| `--api-url`           | `NSL_API_URL`  | Registry API URL                |
-| `--name, -n`          |                | App name                        |
-| `--type, -t`          |                | App type (fe, be, db)           |
-| `--target-url, -u`    |                | Target URL (fe/be)              |
-| `--docs-url`          |                | Docs URL (be)                   |
-| `--connection-string` |                | Postgres connection string (db) |
-| `--description, -d`   |                | Description                     |
-| `--no-auth`           |                | Disable auth (default false)    |
-| `--disabled`          |                | Create disabled (default false) |
+Output uses TOON for compact, deterministic agent consumption.
 
-### Remove an app
+## Enroll another machine
 
-By ID or name:
+Prepare the new `not-so-localhost` checkout's ignored root, registry, and backup
+environment files, then prebuild its images before issuing a short-lived token:
 
-    nsl remove my-api
-    nsl remove abc12345
+```sh
+docker compose build
+```
 
-Interactive fuzzy select (omit argument):
+On an operator machine, load and export the broker values without printing
+them, then issue the token:
 
-    nsl remove
+```sh
+source /path/to/not-so-localhost/.broker-secrets.env
+export NSL_BROKER_URL NSL_BROKER_ADMIN_TOKEN
+nsl enrollment-token --node-name laptop3
+```
+
+Set the returned value as `NSL_ENROLLMENT_TOKEN` in the new checkout's root
+`.env`, confirm `NODE_NAME=laptop3` and `ENROLLMENT_BROKER_URL` use the same
+broker, then start the already-built stack promptly:
+
+```sh
+docker compose up -d
+```
+
+The token is single-use and expires after at most 15 minutes.

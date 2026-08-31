@@ -1,107 +1,47 @@
+// Package main implements the nsl command-line client.
 package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
-	survey "github.com/AlecAivazis/survey/v2"
 	"github.com/josephdodge8141/nsl"
 )
 
-func removeCmd(apiURL string, args []string) {
-	client := nsl.NewClient(apiURL)
-
-	if len(args) > 0 {
-		idOrName := args[0]
-		apps, err := client.List()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		var target *nsl.App
-		for i, a := range apps {
-			if a.ID == idOrName || strings.EqualFold(a.ID, idOrName) {
-				target = &apps[i]
-				break
-			}
-		}
-		if target == nil {
-			for i, a := range apps {
-				if strings.HasPrefix(strings.ToLower(a.Name), strings.ToLower(idOrName)) {
-					target = &apps[i]
-					break
-				}
-			}
-		}
-		if target == nil {
-			fmt.Fprintf(os.Stderr, "error: no app matching %q\n", idOrName)
-			os.Exit(1)
-		}
-
-		if err := client.Delete(target.ID); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Removed %s\n", target.Name)
-		return
+func removeCmd(apiURL, identifier string) error {
+	if identifier == "" {
+		return usageError("app id or exact name is required", "nsl remove <id-or-name>")
 	}
-
+	client := nsl.NewClient(apiURL)
+	node, err := client.LocalNode()
+	if err != nil {
+		return err
+	}
 	apps, err := client.List()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-	if len(apps) == 0 {
-		fmt.Println("No apps to remove.")
-		return
-	}
-
-	opts := make([]string, len(apps))
-	for i, a := range apps {
-		label := a.Name
-		if a.RouteRule != "" {
-			label += " (" + a.RouteRule + ")"
-		}
-		opts[i] = label
-	}
-
-	var selected string
-	if err := survey.AskOne(&survey.Select{Message: "Select app to remove:", Options: opts}, &selected); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	var target *nsl.App
-	for i, a := range apps {
-		label := a.Name
-		if a.RouteRule != "" {
-			label += " (" + a.RouteRule + ")"
-		}
-		if label == selected {
-			target = &apps[i]
-			break
+	matches := make([]nsl.App, 0, 1)
+	for _, app := range apps {
+		if app.NodeID == node.ID && (app.ID == identifier || strings.EqualFold(app.Name, identifier)) {
+			matches = append(matches, app)
 		}
 	}
-
-	if target == nil {
-		fmt.Fprintf(os.Stderr, "error: unexpected selection\n")
-		os.Exit(1)
+	if len(matches) == 0 {
+		fmt.Println("app:")
+		fmt.Printf("  name: %s\n", quote(identifier))
+		fmt.Println("  status: already_absent")
+		return nil
 	}
-
-	confirm := false
-	if err := survey.AskOne(&survey.Confirm{Message: fmt.Sprintf("Remove %s?", target.Name), Default: false}, &confirm); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	if len(matches) > 1 {
+		return usageError("name matches apps on multiple nodes; use the app id", "nsl list")
 	}
-	if !confirm {
-		fmt.Println("Cancelled.")
-		return
+	if err := client.Delete(matches[0]); err != nil {
+		return err
 	}
-
-	if err := client.Delete(target.ID); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Removed %s\n", target.Name)
+	fmt.Println("app:")
+	fmt.Printf("  id: %s\n", quote(matches[0].ID))
+	fmt.Printf("  name: %s\n", quote(matches[0].Name))
+	fmt.Println("  status: removed")
+	return nil
 }

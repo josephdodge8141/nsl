@@ -1,177 +1,88 @@
-# nsl — Not So Localhost app registry CLI
+---
+name: nsl
+description: Register, list, verify, and remove HTTP services across Not-So-Localhost machines. Use whenever the user asks to register or expose an app, publish an x--node.joedodge.dev URL, configure LiteLLM access, inspect the shared apps portal, or enroll another NSL laptop.
+---
 
-Manage apps in the Not So Localhost stack through the registry server's HTTP API.
+# NSL expert
 
-## Quick reference
+Execute NSL operations for the user instead of only suggesting commands.
 
-```bash
-# List all registered apps
-nsl list
+Before mutations, ensure `NSL_API_TOKEN` is set from the node's local
+`REGISTRY_API_TOKEN` configuration without printing either value.
 
-# Add an app (interactive — prompts for everything)
-nsl add
+## Register an app
 
-# Add a frontend app (non-interactive)
-nsl add --name my-app --type fe --target-url http://container-name:3000
+Infer the app name and target from the current project when possible. A native
+host process must use `host.docker.internal`, not `localhost`, because Traefik
+runs in Docker.
 
-# Add a backend app with Swagger docs
-nsl add --name my-api --type be --docs-url http://api:8080/swagger
-
-# Add a database app
-nsl add --name order-db --type db --connection-string postgres://user:pass@host:5432/db
-
-# Remove by ID or name prefix
-nsl remove my-api
-
-# Remove interactively (fuzzy select)
-nsl remove
+```sh
+nsl add --name <name> --target-url http://host.docker.internal:<port>
 ```
 
-## CLI reference
+Choose one policy:
 
-### nsl list
+- `browser`: Keycloak protects every route. This is the default.
+- `upstream`: the application validates its own API credentials.
+- `litellm`: Keycloak protects browser/UI routes while `/v1` relies on LiteLLM
+  virtual keys.
 
-Prints a table of all apps: abbreviated ID, name, type, route rule, enabled.
-
-### nsl add
-
-Dual-mode: no flags starts interactive prompts; any flag starts hybrid mode
-(prompts only for missing required fields).
-
-Flags:
-
-| Flag                  | Env            | Description                     |
-|-----------------------|----------------|---------------------------------|
-| `--api-url`           | `NSL_API_URL`  | Registry API URL (default localhost:7272) |
-| `--name, -n`          |                | App name — alphanumeric + hyphens |
-| `--type, -t`          |                | App type: fe, be, db            |
-| `--target-url, -u`    |                | HTTP URL to the app's frontend    |
-| `--docs-url`          |                | OpenAPI doc URL (be only)       |
-| `--connection-string` |                | postgres:// URL (db only)       |
-| `--description, -d`   |                | Free-text description           |
-| `--no-auth`           |                | Skip oauth2-proxy auth          |
-| `--disabled`          |                | Register as disabled            |
-
-**Type-specific requirements:**
-- `fe` — `--target-url` is required
-- `be` — `--docs-url` is required, `--target-url` is optional
-- `db` — `--connection-string` is required
-
-All type-specific fields are validated in real time during interactive mode.
-
-### nsl remove
-
-- `nsl remove <id-or-name>` — match by ID (full or prefix), then by name prefix
-- `nsl remove` — interactive fuzzy select from live apps with confirmation
-
-### nsl version
-
-Prints the CLI version and the registry server version. Useful for checking compatibility.
-
-```bash
-nsl version
+```sh
+nsl add --name litellm \
+  --target-url http://host.docker.internal:4000 \
+  --policy litellm
 ```
 
-### Version compatibility
+Do not register databases. NSL has no Swagger UI or pgweb sidecars and does not
+provision app workloads or app-owned databases.
 
-The CLI calls `${api}/api/v1/...` routes. If the CLI version differs from the
-registry server version, `nsl` prints a warning on every command:
+After mutation, run `nsl list` and make a harmless request to the public URL.
+Never print API keys used for verification.
 
-```
-warning: nsl v0.1.0, registry dev (use --no-version-check to suppress)
-```
+## Shared inventory
 
-This warns about potential drift without blocking operation. Pinned install
-with `go install github.com/josephdodge8141/nsl/cmd/nsl@v0.1.0` ensures the
-CLI matches a known release.
+`nsl list` returns every app from the shared S3 registry. Apps include an owning
+node UUID; only that node renders their Traefik routes.
 
-When the registry server is updated in a breaking way, the route prefix
-changes to `/api/v2/...` and the CLI must be rebuilt. The old CLI will fail
-with a 404, not silently corrupt data.
+Use `nsl nodes` to map node UUIDs to names. CLI registration always uses the
+local node. Use the authenticated browser portal for an explicitly selected
+remote owner.
 
-## Stack architecture
+Repeated registration with the same node, name, and target is a successful
+no-op. A conflicting target must be edited deliberately through the portal.
 
-The Not So Localhost stack runs in Docker behind a Cloudflare Tunnel:
+## Remove
 
-```
-Cloudflare Tunnel -> Traefik:80
-  ├── auth.YOUR_DOMAIN  -> keycloak:8080
-  ├── t.YOUR_DOMAIN     -> oauth2-proxy -> host.docker.internal:7681 (ttyd)
-  ├── apps.YOUR_DOMAIN  -> oauth2-proxy -> registry:7272
-  └── *.YOUR_DOMAIN     -> oauth2-proxy -> registry:7272 (catchall)
+Resolve the exact app first, then run:
+
+```sh
+nsl remove <id-or-exact-name>
 ```
 
-Key services (`docker compose ps`):
+When the same name exists on multiple nodes, use the UUID.
 
-| Container | Purpose |
-|-----------|---------|
-| `not-so-localhost-postgres-1` | Central PostgreSQL — app metadata + Keycloak + app DBs |
-| `not-so-localhost-registry-1` | Registry HTTP API (port 7272) — nsl talks to this |
-| `not-so-localhost-keycloak-1` | OIDC auth provider |
-| `not-so-localhost-traefik-1` | Reverse proxy (port 80) |
-| `not-so-localhost-oauth2-proxy-1` | Forward-auth middleware |
-| `not-so-localhost-cloudflared-1` | Cloudflare Tunnel client |
-| `not-so-localhost-terminal-1` | SSH terminal container |
-| `not-so-localhost-backup-1` | DB backup runner |
+## Enroll a node
 
-### Sidecar containers (auto-deployed by registry)
+The enrollment broker must already be deployed. Read the admin secret from the
+environment; never ask the user to paste it into chat.
 
-When you add a `be` or `db` app, the registry deploys a sidecar container:
+The Cloudflare API token currently stored in the enrollment broker as
+`CLOUDFLARE_API_TOKEN` expires on **2027-08-28**. Check or rotate this Worker
+secret first when enrollment, tunnel creation, or DNS provisioning begins
+failing near that date.
 
-- **`<name>-swagger`** — Swagger UI for backend docs (image: `swaggerapi/swagger-ui`)
-- **`<name>-pgweb`** — PGWeb for database browsing (image: `sosedoff/pgweb`)
-
-Find them with `docker ps --filter network=not-so-localhost_edge`.
-
-## Common workflows
-
-### Add a frontend app
-
-```bash
-# 1. Spin up your app container on the edge network:
-docker run -d --name my-app --network not-so-localhost_edge my-image
-
-# 2. Register it in the registry:
-nsl add --name my-app --type fe --target-url http://my-app:3000
-
-# 3. Access at: https://apps.YOUR_DOMAIN/my-app
+```sh
+NSL_BROKER_ADMIN_TOKEN=<secret> \
+  nsl enrollment-token --node-name <canonical-node-name>
 ```
 
-### Add a backend API
+The returned token is single-use, bound to that name, and valid for at most 15
+minutes. Put it in the new node's root `.env` with `NODE_NAME` and
+`ENROLLMENT_BROKER_URL`, then run
+`docker compose up -d --build`. Node initialization exchanges it for persistent
+node and tunnel credentials and never needs it again.
 
-```bash
-# The registry auto-deploys a Swagger UI sidecar.
-nsl add --name my-api --type be --docs-url http://api-container:8080/swagger
-# Swagger at: https://my-api.YOUR_DOMAIN
-```
+## Output
 
-### Add a database
-
-```bash
-# Deploy your database container and register it:
-nsl add --name order-db --type db --connection-string postgres://user:pass@host:5432/db
-# PGWeb (DB browser) at: https://order-db.YOUR_DOMAIN
-```
-
-### Remove an app and its sidecars
-
-```bash
-nsl remove order-db
-# Removes the PGWeb sidecar container, deletes the DB route, and removes
-# the app from the registry.
-```
-
-### Check running containers
-
-```bash
-# All stack services:
-docker compose ps
-
-# Sidecars for registered apps:
-docker ps --filter network=not-so-localhost_edge
-
-# App containers by type:
-docker ps --filter network=not-so-localhost_edge --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
-```
-
-The registry writes Traefik routes to `traefik/dynamic/managed.yml` — this file is auto-generated from enabled apps and should not be edited by hand.
+Commands emit TOON on stdout. Treat non-zero exit status as failure. Do not
+parse stderr for application data.
