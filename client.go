@@ -6,95 +6,107 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 )
 
+const apiPath = "/api/v2"
+
 type Client struct {
-	BaseURL string
-	HTTP    *http.Client
+	BaseURL  string
+	HTTP     *http.Client
+	APIToken string
 }
 
 func NewClient(baseURL string) *Client {
-	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		HTTP:    http.DefaultClient,
-	}
+	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: 30 * time.Second}, APIToken: os.Getenv("NSL_API_TOKEN")}
 }
 
-const apiPath = "/api/v1"
-
 func (c *Client) FetchVersion() (string, error) {
-	resp, err := c.HTTP.Get(c.BaseURL + apiPath + "/version")
-	if err != nil {
-		return "", fmt.Errorf("fetch version: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var v struct {
+	var response struct {
 		Version string `json:"version"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return "", fmt.Errorf("fetch version: decode: %w", err)
+	if _, err := c.do(http.MethodGet, apiPath+"/version", nil, "", &response); err != nil {
+		return "", err
 	}
-	return v.Version, nil
+	return response.Version, nil
+}
+
+func (c *Client) LocalNode() (Node, error) {
+	var node Node
+	_, err := c.do(http.MethodGet, apiPath+"/node", nil, "", &node)
+	return node, err
+}
+
+func (c *Client) Config() (Config, error) {
+	var registryConfig Config
+	_, err := c.do(http.MethodGet, "/api/config", nil, "", &registryConfig)
+	return registryConfig, err
+}
+
+func (c *Client) Nodes() ([]Node, error) {
+	var nodes []Node
+	_, err := c.do(http.MethodGet, apiPath+"/nodes", nil, "", &nodes)
+	return nodes, err
 }
 
 func (c *Client) List() ([]App, error) {
-	resp, err := c.HTTP.Get(c.BaseURL + apiPath + "/apps")
-	if err != nil {
-		return nil, fmt.Errorf("list apps: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list apps: %s", resp.Status)
-	}
-
 	var apps []App
-	if err := json.NewDecoder(resp.Body).Decode(&apps); err != nil {
-		return nil, fmt.Errorf("list apps: decode: %w", err)
-	}
-	return apps, nil
+	_, err := c.do(http.MethodGet, apiPath+"/apps", nil, "", &apps)
+	return apps, err
 }
 
-func (c *Client) Create(app App) (*App, error) {
-	body, err := json.Marshal(app)
-	if err != nil {
-		return nil, fmt.Errorf("create app: marshal: %w", err)
-	}
-
-	resp, err := c.HTTP.Post(c.BaseURL+apiPath+"/apps", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create app: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("create app: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
-	}
-
-	var created App
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		return nil, fmt.Errorf("create app: decode: %w", err)
-	}
-	return &created, nil
+func (c *Client) Create(input AppInput) (App, error) {
+	var app App
+	_, err := c.do(http.MethodPost, apiPath+"/apps", input, "", &app)
+	return app, err
 }
 
-func (c *Client) Delete(id string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.BaseURL+apiPath+"/apps/"+id, nil)
-	if err != nil {
-		return fmt.Errorf("delete app: %w", err)
-	}
+func (c *Client) Delete(app App) error {
+	_, err := c.do(http.MethodDelete, apiPath+"/apps/"+app.ID, nil, appETag(app), nil)
+	return err
+}
 
-	resp, err := c.HTTP.Do(req)
+func (c *Client) do(method, path string, input any, ifMatch string, output any) (http.Header, error) {
+	var body io.Reader
+	if input != nil {
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequest(method, c.BaseURL+path, body)
 	if err != nil {
-		return fmt.Errorf("delete app: %w", err)
+		return nil, err
 	}
-	defer resp.Body.Close()
+	if input != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if ifMatch != "" {
+		request.Header.Set("If-Match", ifMatch)
+	}
+	if c.APIToken != "" {
+		request.Header.Set("Authorization", "Bearer "+c.APIToken)
+	}
+	response, err := c.HTTP.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("registry unavailable: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return response.Header, fmt.Errorf("registry returned %d: %s", response.StatusCode, strings.TrimSpace(string(message)))
+	}
+	if output != nil {
+		if err := json.NewDecoder(response.Body).Decode(output); err != nil {
+			return response.Header, fmt.Errorf("decode registry response: %w", err)
+		}
+	}
+	return response.Header, nil
+}
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("delete app: %s", resp.Status)
-	}
-	return nil
+func appETag(app App) string {
+	return fmt.Sprintf(`"app:%s:%d"`, app.ID, app.Generation)
 }

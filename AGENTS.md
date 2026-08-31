@@ -5,11 +5,11 @@ This file is committed project-intrinsic agent knowledge: build, test, release, 
 - Build: `go build -ldflags="-X main.Version=$VERSION" ./cmd/nsl/`
 - Install: `go install github.com/josephdodge8141/nsl/cmd/nsl@v0.1.0`
 - Lint: `go vet ./...` and `gofmt -d .`
-- Uses stdlib `flag` for CLI, `survey` for interactive prompts
+- Uses stdlib `flag`; every workflow is non-interactive and agent-safe
 - API server default: `http://localhost:7272`, configurable via `--api-url` or `NSL_API_URL`
-- CLI calls `${api}/api/v1/...` routes. Breaking server changes bump to `/api/v2/`.
+- CLI calls `${api}/api/v2/...` routes.
 - Version embedded at build time via `-ldflags="-X main.Version=..."`. Default: `"dev"`.
-- Registry server version endpoint: `GET /api/v1/version` returns `{"version":"..."}`.
+- Registry server version endpoint: `GET /api/v2/version` returns `{"version":"..."}`.
 
 ## Skills
 
@@ -18,8 +18,9 @@ This file is committed project-intrinsic agent knowledge: build, test, release, 
 ## Registry server (not-so-localhost)
 
 The `nsl` CLI talks to the registry server's HTTP API. The server lives in the separate `not-so-localhost` repo and handles:
-- CRUD on the `apps` PostgreSQL table
-- Traefik route generation (`traefik/dynamic/managed.yml`)
-- Docker sidecar deployment (swagger-ui for `be` apps, pgweb for `db` apps)
+- S3 CAS updates to the shared node/app registry
+- assignment of apps to persistent node UUIDs
+- per-node Traefik route reconciliation
+- Cloudflare DNS provisioning through the enrollment broker
 
-The registry exposes port 7272 on the host. No auth on the API — it's localhost-only.
+The registry binds port 7272 to host loopback for the local CLI.
