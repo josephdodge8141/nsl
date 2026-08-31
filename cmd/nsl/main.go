@@ -1,3 +1,4 @@
+// Package main implements the nsl command-line client.
 package main
 
 import (
@@ -15,6 +16,7 @@ import (
 	"github.com/josephdodge8141/nsl"
 )
 
+// Version is embedded at build time for client/server compatibility reporting.
 var Version = "dev"
 
 type cliError struct {

@@ -1,3 +1,4 @@
+// Package main implements the nsl command-line client.
 package main
 
 import (

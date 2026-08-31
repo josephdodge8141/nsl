@@ -1,3 +1,4 @@
+// Package nsl implements the client for the distributed NSL registry.
 package nsl
 
 import (
@@ -11,6 +12,7 @@ import (
 	"time"
 )
 
+// EnrollmentToken contains a short-lived credential bound to a node name.
 type EnrollmentToken struct {
 	TokenID         string    `json:"token_id"`
 	NodeName        string    `json:"node_name"`
@@ -18,6 +20,7 @@ type EnrollmentToken struct {
 	ExpiresAt       time.Time `json:"expires_at"`
 }
 
+// IssueEnrollmentToken requests a single-use node credential from the broker.
 func IssueEnrollmentToken(ctx context.Context, brokerURL, adminToken, nodeName string, ttl time.Duration) (EnrollmentToken, error) {
 	input := map[string]any{"node_name": nodeName, "ttl_seconds": int(ttl.Seconds())}
 	body, err := json.Marshal(input)

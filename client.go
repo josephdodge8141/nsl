@@ -1,3 +1,4 @@
+// Package nsl implements the client for the distributed NSL registry.
 package nsl
 
 import (
@@ -13,16 +14,19 @@ import (
 
 const apiPath = "/api/v2"
 
+// Client calls one NSL registry API.
 type Client struct {
 	BaseURL  string
 	HTTP     *http.Client
 	APIToken string
 }
 
+// NewClient creates a registry client using NSL_API_TOKEN when set.
 func NewClient(baseURL string) *Client {
 	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: 30 * time.Second}, APIToken: os.Getenv("NSL_API_TOKEN")}
 }
 
+// FetchVersion returns the registry server version.
 func (c *Client) FetchVersion() (string, error) {
 	var response struct {
 		Version string `json:"version"`
@@ -33,36 +37,42 @@ func (c *Client) FetchVersion() (string, error) {
 	return response.Version, nil
 }
 
+// LocalNode returns the identity of the registry's local node.
 func (c *Client) LocalNode() (Node, error) {
 	var node Node
 	_, err := c.do(http.MethodGet, apiPath+"/node", nil, "", &node)
 	return node, err
 }
 
+// Config returns public registry and node configuration.
 func (c *Client) Config() (Config, error) {
 	var registryConfig Config
 	_, err := c.do(http.MethodGet, "/api/config", nil, "", &registryConfig)
 	return registryConfig, err
 }
 
+// Nodes returns every enrolled node.
 func (c *Client) Nodes() ([]Node, error) {
 	var nodes []Node
 	_, err := c.do(http.MethodGet, apiPath+"/nodes", nil, "", &nodes)
 	return nodes, err
 }
 
+// List returns every registered application.
 func (c *Client) List() ([]App, error) {
 	var apps []App
 	_, err := c.do(http.MethodGet, apiPath+"/apps", nil, "", &apps)
 	return apps, err
 }
 
+// Create registers an application.
 func (c *Client) Create(input AppInput) (App, error) {
 	var app App
 	_, err := c.do(http.MethodPost, apiPath+"/apps", input, "", &app)
 	return app, err
 }
 
+// Delete removes an application using its current generation.
 func (c *Client) Delete(app App) error {
 	_, err := c.do(http.MethodDelete, apiPath+"/apps/"+app.ID, nil, appETag(app), nil)
 	return err

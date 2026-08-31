@@ -1,3 +1,3 @@
 module github.com/josephdodge8141/nsl
 
-go 1.26.5
+go 1.22
